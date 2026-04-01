@@ -1,9 +1,9 @@
 {
   "sources": [
     {
-      "name": "Source Google Sheets",
+      "name": "Google Sheets",
       "dockerRepository": "ghcr.io/synclet-io/synclet/source-google-sheets",
-      "dockerImageTag": "0.2.0",
+      "dockerImageTag": "0.2.1",
       "documentationUrl": "",
       "releaseStage": "alpha",
       "supportLevel": "community",
