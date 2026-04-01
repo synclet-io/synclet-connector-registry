@@ -19,48 +19,37 @@ jobs:
           CONNECTOR: ${{ github.event.client_payload.connector }}
           VERSION: ${{ github.event.client_payload.version }}
           IMAGE: ${{ github.event.client_payload.image }}
+          METADATA: ${{ toJSON(github.event.client_payload.metadata) }}
+          SPEC: ${{ toJSON(github.event.client_payload.spec) }}
         run: |
-          # Determine connector type from name prefix
+          # Determine array key from connector name prefix
           if [[ "$CONNECTOR" == source-* ]]; then
-            TYPE="source"
             ARRAY_KEY="sources"
           elif [[ "$CONNECTOR" == destination-* ]]; then
-            TYPE="destination"
             ARRAY_KEY="destinations"
           else
             echo "::error::Unknown connector type for: $CONNECTOR"
             exit 1
           fi
 
-          # Pull the connector image and extract spec
-          docker pull "${IMAGE}:${VERSION}"
-          SPEC_OUTPUT=$(docker run --rm --network none "${IMAGE}:${VERSION}" spec 2>/dev/null || echo '{}')
-
-          # Parse the spec JSON (extract the spec object from Airbyte protocol message)
-          SPEC_JSON=$(echo "$SPEC_OUTPUT" | jq -c 'select(.type == "SPEC") | .spec // empty' 2>/dev/null || echo '')
-          if [ -z "$SPEC_JSON" ]; then
-            echo "::warning::Could not extract spec from connector, using empty spec"
-            SPEC_JSON='null'
-          fi
-
-          # Build the connector entry
-          ENTRY=$(jq -n \
-            --arg name "$CONNECTOR" \
+          # Build the connector entry from metadata + spec
+          ENTRY=$(echo "$METADATA" | jq -c \
             --arg dockerRepository "$IMAGE" \
             --arg dockerImageTag "$VERSION" \
-            --arg releaseStage "generally_available" \
-            --arg supportLevel "certified" \
-            --arg license "MIT" \
-            --argjson spec "$SPEC_JSON" \
+            --argjson spec "$SPEC" \
             '{
-              name: $name,
+              name: .name,
               dockerRepository: $dockerRepository,
               dockerImageTag: $dockerImageTag,
-              documentationUrl: "",
-              releaseStage: $releaseStage,
-              supportLevel: $supportLevel,
-              license: $license,
+              documentationUrl: .documentation_url,
+              releaseStage: .release_stage,
+              supportLevel: .support_level,
+              sourceType: .source_type,
+              iconUrl: .icon_url,
+              license: .license,
               spec: $spec,
+              breakingChanges: .breaking_changes,
+              externalDocumentationUrls: .external_documentation_urls,
               tombstone: false
             }')
 
