@@ -1,0 +1,82 @@
+name: Update Registry
+
+on:
+  repository_dispatch:
+    types: [connector-released]
+
+permissions:
+  contents: write
+  pages: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Update registry entry
+        env:
+          CONNECTOR: ${{ github.event.client_payload.connector }}
+          VERSION: ${{ github.event.client_payload.version }}
+          IMAGE: ${{ github.event.client_payload.image }}
+        run: |
+          # Determine connector type from name prefix
+          if [[ "$CONNECTOR" == source-* ]]; then
+            TYPE="source"
+            ARRAY_KEY="sources"
+          elif [[ "$CONNECTOR" == destination-* ]]; then
+            TYPE="destination"
+            ARRAY_KEY="destinations"
+          else
+            echo "::error::Unknown connector type for: $CONNECTOR"
+            exit 1
+          fi
+
+          # Pull the connector image and extract spec
+          docker pull "${IMAGE}:${VERSION}"
+          SPEC_OUTPUT=$(docker run --rm --network none "${IMAGE}:${VERSION}" spec 2>/dev/null || echo '{}')
+
+          # Parse the spec JSON (extract the spec object from Airbyte protocol message)
+          SPEC_JSON=$(echo "$SPEC_OUTPUT" | jq -c 'select(.type == "SPEC") | .spec // empty' 2>/dev/null || echo '')
+          if [ -z "$SPEC_JSON" ]; then
+            echo "::warning::Could not extract spec from connector, using empty spec"
+            SPEC_JSON='null'
+          fi
+
+          # Build the connector entry
+          ENTRY=$(jq -n \
+            --arg name "$CONNECTOR" \
+            --arg dockerRepository "$IMAGE" \
+            --arg dockerImageTag "$VERSION" \
+            --arg releaseStage "generally_available" \
+            --arg supportLevel "certified" \
+            --arg license "MIT" \
+            --argjson spec "$SPEC_JSON" \
+            '{
+              name: $name,
+              dockerRepository: $dockerRepository,
+              dockerImageTag: $dockerImageTag,
+              documentationUrl: "",
+              releaseStage: $releaseStage,
+              supportLevel: $supportLevel,
+              license: $license,
+              spec: $spec,
+              tombstone: false
+            }')
+
+          # Update registry.json: remove existing entry for this connector, add new one
+          jq --arg key "$ARRAY_KEY" \
+             --arg repo "$IMAGE" \
+             --argjson entry "$ENTRY" \
+             '.[$key] = [.[$key][] | select(.dockerRepository != $repo)] + [$entry]' \
+             registry.json > registry.tmp.json
+          mv registry.tmp.json registry.json
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add registry.json
+          git diff --cached --quiet && echo "No changes" && exit 0
+          git commit -m "registry: update ${{ github.event.client_payload.connector }} to ${{ github.event.client_payload.version }}"
+          git push
