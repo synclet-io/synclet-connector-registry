@@ -6,7 +6,11 @@ on:
 
 permissions:
   contents: write
-  pages: write
+  actions: write
+
+concurrency:
+  group: update-registry
+  cancel-in-progress: false
 
 jobs:
   update:
@@ -14,58 +18,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Update registry entry
+      - name: Save payload
         env:
-          CONNECTOR: ${{ github.event.client_payload.connector }}
-          VERSION: ${{ github.event.client_payload.version }}
-          IMAGE: ${{ github.event.client_payload.image }}
-          METADATA: ${{ toJSON(github.event.client_payload.metadata) }}
-          SPEC: ${{ toJSON(github.event.client_payload.spec) }}
-        run: |
-          # Determine array key from connector name prefix
-          if [[ "$CONNECTOR" == source-* ]]; then
-            ARRAY_KEY="sources"
-          elif [[ "$CONNECTOR" == destination-* ]]; then
-            ARRAY_KEY="destinations"
-          else
-            echo "::error::Unknown connector type for: $CONNECTOR"
-            exit 1
-          fi
+          PAYLOAD: ${{ toJSON(github.event.client_payload) }}
+        run: printf '%s' "$PAYLOAD" > "$RUNNER_TEMP/payload.json"
 
-          # Build the connector entry from metadata + spec
-          ENTRY=$(echo "$METADATA" | jq -c \
-            --arg dockerRepository "$IMAGE" \
-            --arg dockerImageTag "$VERSION" \
-            --argjson spec "$SPEC" \
-            '{
-              name: .name,
-              dockerRepository: $dockerRepository,
-              dockerImageTag: $dockerImageTag,
-              documentationUrl: .documentation_url,
-              releaseStage: .release_stage,
-              supportLevel: .support_level,
-              sourceType: .source_type,
-              iconUrl: .icon_url,
-              license: .license,
-              spec: $spec,
-              breakingChanges: .breaking_changes,
-              externalDocumentationUrls: .external_documentation_urls,
-              tombstone: false
-            }')
-
-          # Update registry.json: remove existing entry for this connector, add new one
-          jq --arg key "$ARRAY_KEY" \
-             --arg repo "$IMAGE" \
-             --argjson entry "$ENTRY" \
-             '.[$key] = [.[$key][] | select(.dockerRepository != $repo)] + [$entry]' \
-             registry.json > registry.tmp.json
-          mv registry.tmp.json registry.json
+      - name: Update registry entry
+        run: ./scripts/update-registry.sh "$RUNNER_TEMP/payload.json" registry.json
 
       - name: Commit and push
         run: |
+          CONNECTOR=$(jq -r .connector "$RUNNER_TEMP/payload.json")
+          VERSION=$(jq -r .version "$RUNNER_TEMP/payload.json")
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add registry.json
           git diff --cached --quiet && echo "No changes" && exit 0
-          git commit -m "registry: update ${{ github.event.client_payload.connector }} to ${{ github.event.client_payload.version }}"
+          git commit -m "registry: update $CONNECTOR to $VERSION"
           git push
+
+      # A push made with GITHUB_TOKEN starts no push-triggered workflow, so Pages is deployed by dispatch.
+      - name: Deploy Pages
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run pages.yml --repo "$GITHUB_REPOSITORY" --ref main
